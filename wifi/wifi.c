@@ -122,6 +122,15 @@ struct genl_family *nl80211;
 #ifndef WIFI_DRIVER_FW_PATH_P2P
 #define WIFI_DRIVER_FW_PATH_P2P		NULL
 #endif
+#ifndef WIFI_DRIVER_FW_PATH_STA_DHD
+#define WIFI_DRIVER_FW_PATH_STA_DHD	NULL
+#endif
+#ifndef WIFI_DRIVER_FW_PATH_AP_DHD
+#define WIFI_DRIVER_FW_PATH_AP_DHD	NULL
+#endif
+#ifndef WIFI_DRIVER_FW_PATH_P2P_DHD
+#define WIFI_DRIVER_FW_PATH_P2P_DHD	NULL
+#endif
 
 #ifdef WIFI_EXT_MODULE_NAME
 static const char EXT_MODULE_NAME[] = WIFI_EXT_MODULE_NAME;
@@ -153,6 +162,12 @@ static const char DRIVER_MODULE_TAG[]   = WIFI_DRIVER_MODULE_NAME " ";
 static const char DRIVER_MODULE_PATH[]  = WIFI_DRIVER_MODULE_PATH;
 static const char DRIVER_MODULE_ARG[]   = WIFI_DRIVER_MODULE_ARG;
 static const char DRIVER_MODULE_AP_ARG[] = WIFI_DRIVER_MODULE_AP_ARG;
+#ifdef XIAOMI_MIONE_WIFI
+static const char DRIVER_MODULE_NAME_DHD[] = WIFI_DRIVER_MODULE_NAME_DHD;
+static const char DRIVER_MODULE_TAG_DHD[]  = WIFI_DRIVER_MODULE_NAME_DHD " ";
+static const char DRIVER_MODULE_PATH_DHD[] = WIFI_DRIVER_MODULE_PATH_DHD;
+static const char DRIVER_MODULE_ARG_DHD[]  = WIFI_DRIVER_MODULE_ARG_DHD;
+#endif
 #endif
 static const char FIRMWARE_LOADER[]     = WIFI_FIRMWARE_LOADER;
 static const char DRIVER_PROP_NAME[]    = "wlan.driver.status";
@@ -180,6 +195,71 @@ static unsigned char dummy_key[21] = { 0x02, 0x11, 0xbe, 0x33, 0x43, 0x35,
 static char supplicant_name[PROPERTY_VALUE_MAX];
 /* Is either SUPP_PROP_NAME or P2P_PROP_NAME */
 static char supplicant_prop_name[PROPERTY_KEY_MAX];
+
+#if defined(WIFI_DRIVER_MODULE_PATH) && defined(XIAOMI_MIONE_WIFI)
+static int is_wifi_module_4330 = -1;
+
+static void check_wifi_module(void)
+{
+    char wifi_module[20];
+    int fd;
+    ssize_t len;
+
+    if (is_wifi_module_4330 >= 0)
+        return;
+
+    is_wifi_module_4330 = 0;
+
+    fd = open("/sys/wifi_properties/wifi_module", O_RDONLY);
+    if (fd < 0) {
+        ALOGE("unable to open /sys/wifi_properties/wifi_module: %s", strerror(errno));
+        return;
+    }
+
+    len = read(fd, wifi_module, sizeof(wifi_module) - 1);
+    close(fd);
+    if (len < 0) {
+        ALOGE("read /sys/wifi_properties/wifi_module failed: %s", strerror(errno));
+        return;
+    }
+
+    wifi_module[len] = '\0';
+    if (strncmp(wifi_module, "wifi_module=4330", 16) == 0)
+        is_wifi_module_4330 = 1;
+
+    ALOGI("mione wifi module: %s", is_wifi_module_4330 ? "bcm4330" : "bcm4329");
+}
+
+static const char *wifi_driver_module_name(void)
+{
+    check_wifi_module();
+    return is_wifi_module_4330 ? DRIVER_MODULE_NAME_DHD : DRIVER_MODULE_NAME;
+}
+
+static const char *wifi_driver_module_tag(void)
+{
+    check_wifi_module();
+    return is_wifi_module_4330 ? DRIVER_MODULE_TAG_DHD : DRIVER_MODULE_TAG;
+}
+
+static const char *wifi_driver_module_path(void)
+{
+    check_wifi_module();
+    return is_wifi_module_4330 ? DRIVER_MODULE_PATH_DHD : DRIVER_MODULE_PATH;
+}
+
+static const char *wifi_driver_module_arg(void)
+{
+    check_wifi_module();
+    return is_wifi_module_4330 ? DRIVER_MODULE_ARG_DHD : DRIVER_MODULE_ARG;
+}
+#else
+#define wifi_driver_module_name() DRIVER_MODULE_NAME
+#define wifi_driver_module_tag()  DRIVER_MODULE_TAG
+#define wifi_driver_module_path() DRIVER_MODULE_PATH
+#define wifi_driver_module_arg()  DRIVER_MODULE_ARG
+#endif
+
 
 #ifdef SAMSUNG_WIFI
 char* get_samsung_wifi_type()
@@ -319,7 +399,8 @@ int is_wifi_driver_loaded() {
     char driver_status[PROPERTY_VALUE_MAX];
 #ifdef WIFI_DRIVER_MODULE_PATH
     FILE *proc;
-    char line[sizeof(DRIVER_MODULE_TAG)+10];
+    char line[64];
+    const char *module_tag = wifi_driver_module_tag();
 #endif
 
     if (!property_get(DRIVER_PROP_NAME, driver_status, NULL)
@@ -339,7 +420,7 @@ int is_wifi_driver_loaded() {
         return 0;
     }
     while ((fgets(line, sizeof(line), proc)) != NULL) {
-        if (strncmp(line, DRIVER_MODULE_TAG, strlen(DRIVER_MODULE_TAG)) == 0) {
+        if (strncmp(line, module_tag, strlen(module_tag)) == 0) {
             fclose(proc);
             return 1;
         }
@@ -417,7 +498,7 @@ int wifi_load_driver()
     usleep(200000);
 #endif
 
-    if (insmod(DRIVER_MODULE_PATH, DRIVER_MODULE_ARG) < 0) {
+    if (insmod(wifi_driver_module_path(), wifi_driver_module_arg()) < 0) {
 #endif
 
 #ifdef WIFI_EXT_MODULE_NAME
@@ -473,7 +554,7 @@ int wifi_unload_driver()
     wifi_fst_unload_driver();
 
 #ifdef WIFI_DRIVER_MODULE_PATH
-    if (rmmod(DRIVER_MODULE_NAME) == 0) {
+    if (rmmod(wifi_driver_module_name()) == 0) {
         int count = 20; /* wait at most 10 seconds for completion */
         while (count-- > 0) {
             if (!is_wifi_driver_loaded())
@@ -1208,13 +1289,29 @@ int wifi_command(const char *command, char *reply, size_t *reply_len)
 
 const char *wifi_get_fw_path(int fw_type)
 {
+#ifdef XIAOMI_MIONE_WIFI
+    check_wifi_module();
+#endif
+
     switch (fw_type) {
     case WIFI_GET_FW_PATH_STA:
+#ifndef XIAOMI_MIONE_WIFI
         return WIFI_DRIVER_FW_PATH_STA;
+#else
+        return is_wifi_module_4330 ? WIFI_DRIVER_FW_PATH_STA_DHD : WIFI_DRIVER_FW_PATH_STA;
+#endif
     case WIFI_GET_FW_PATH_AP:
+#ifndef XIAOMI_MIONE_WIFI
         return WIFI_DRIVER_FW_PATH_AP;
+#else
+        return is_wifi_module_4330 ? WIFI_DRIVER_FW_PATH_AP_DHD : WIFI_DRIVER_FW_PATH_AP;
+#endif
     case WIFI_GET_FW_PATH_P2P:
+#ifndef XIAOMI_MIONE_WIFI
         return WIFI_DRIVER_FW_PATH_P2P;
+#else
+        return is_wifi_module_4330 ? WIFI_DRIVER_FW_PATH_P2P_DHD : WIFI_DRIVER_FW_PATH_P2P;
+#endif
     }
     return NULL;
 }
